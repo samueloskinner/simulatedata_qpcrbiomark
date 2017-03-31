@@ -32,14 +32,11 @@ directory<-"P142-2_Wambre_IL33_impact"
 
 workdir<-paste(path, directory, "/", sep="")
 
-library(combinat)
 library(knitr)
 library(shiny)
-library(gplots)
 library(ggplot2)
 library(reshape2)
 library(cowplot)
-library(sva)
 
 # read in scripts
 source(file=paste(workdir,"scripts/","Fluidigm_R_Functions.R",sep=""))
@@ -50,13 +47,18 @@ source(file=paste(workdir,"scripts/","Fluidigm_R_HKgenes_Functions.R",sep=""))
 
 ## Load sample data files as a template
 
-``` {r read in parameters, echo=FALSE}
+```{r read in parameters, echo=FALSE}
+
 
 # read in all data files stored in Data directory - do not know how many there will be 
 fileNames<-list.files(path=paste(workdir,"DataSubset1/",sep=""))
 fileNames<-reorderFileNames(fileNames)
 
-# read in data
+# Read in one raw data file and keep on hand for the headers and such
+rawData<-read.csv(file=paste(workdir,"DataSubset1/", fileNames[1],sep=""), skip=0)
+
+
+# read in data (from analysis script)
 dataList<-list()
 for (i in 1:length(fileNames))
 {
@@ -85,4 +87,81 @@ retList<-combineDataFromMultiplePlates(dataList, ctValList, ctCallList)
 
 ```
 
+# Make samples data set
+
+## Set the parameters of numbers of genes / plates
+
+```{r make data set}
+
+# Define dimensions, and gene sets
+num_genes <- 96
+num_samples <- 96
+num_plates <- 2
+
+# Per plate, the make-up of neg, ref, and normal samples
+num_ref_samples <- 3
+num_neg_samples <- 6
+num_bio_samples <- num_samples - num_ref_samples - num_neg_samples
+
+# Per gene panel, the number of HK genes
+num_HK_genes <- 3
+num_bio_genes <- num_genes - num_HK_genes
+
+```
+
+
+## Initialize single plate (from rawdata)
+
+```{r init plate}
+
+# Gene panel
+panel <- rawData$GE.96x96.Fast.PCR.Melt.v2[12:107]
+
+# Set up structure of Ct values
+cts <- matrix(data=NA, ncol=num_genes, nrow=num_samples)
+rownames(cts) <- panel
+colnames(cts) <- c(paste("Sample", seq(1:num_bio_samples), sep=""), 
+                   paste("Ref", seq(1:num_ref_samples), sep=""), 
+                   paste("Neg", seq(1:num_neg_samples), sep=""))
+
+```
+
+
+# Set parameters for samples and gene sets
+
+```{r samples and genes}
+
+# Number of sample groups and gene sets
+num_sample_groups <- 2
+num_gene_sets <- 3
+
+# Sample groups
+sample_groups <- list()
+samples <- seq(1:num_bio_samples)
+for (group in 1:(num_sample_groups-1)) {
+  sample_groups[[group]] <- sample(samples, size=round(num_bio_samples/num_sample_groups))
+  samples <- samples[!(samples %in% sample_groups[[group]])]
+}
+sample_groups[[num_sample_groups]] <- samples
+
+# Gene sets
+gene_sets <- list()
+genes <- seq(1:num_bio_genes)
+for (group in 1:(num_gene_sets-1)) {
+  # group = 1
+  gene_sets[[group]] <- sample(genes, size=round(num_bio_genes/num_gene_sets))
+  genes <- genes[!(genes %in% gene_sets[[group]])]
+}
+gene_sets[[num_gene_sets]] <- genes
+
+
+```
+
+## Define the expression patter for the sample groups and gene sets
+
+```{r exp pattern}
+
+
+
+```
 
