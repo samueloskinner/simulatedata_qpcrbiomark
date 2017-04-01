@@ -107,6 +107,10 @@ num_bio_samples <- num_samples - num_ref_samples - num_neg_samples
 num_HK_genes <- 3
 num_bio_genes <- num_genes - num_HK_genes
 
+# Number of sample groups and gene sets
+num_sample_groups <- 2
+num_gene_sets <- 3
+
 ```
 
 
@@ -127,33 +131,36 @@ colnames(cts) <- c(paste("Sample", seq(1:num_bio_samples), sep=""),
 ```
 
 
-# Set parameters for samples and gene sets
+# Define sample groups and gene sets
 
 ```{r samples and genes}
-
-# Number of sample groups and gene sets
-num_sample_groups <- 2
-num_gene_sets <- 3
 
 # Sample groups
 sample_groups <- list()
 samples <- seq(1:num_bio_samples)
-for (group in 1:(num_sample_groups-1)) {
-  sample_groups[[group]] <- sample(samples, size=round(num_bio_samples/num_sample_groups))
-  samples <- samples[!(samples %in% sample_groups[[group]])]
+if (num_sample_groups==1) {
+  sample_groups[[1]] <- samples
+} else {
+  for (group in 1:(num_sample_groups-1)) {
+    sample_groups[[group]] <- sample(samples, size=round(num_bio_samples/num_sample_groups))
+    samples <- samples[!(samples %in% sample_groups[[group]])]
+  }
+  sample_groups[[num_sample_groups]] <- samples
 }
-sample_groups[[num_sample_groups]] <- samples
 
 # Gene sets
 gene_sets <- list()
 genes <- seq(1:num_bio_genes)
-for (group in 1:(num_gene_sets-1)) {
-  # group = 1
-  gene_sets[[group]] <- sample(genes, size=round(num_bio_genes/num_gene_sets))
-  genes <- genes[!(genes %in% gene_sets[[group]])]
+if (num_gene_sets==1) {
+  gene_sets[[1]] <- genes
+} else {
+  for (group in 1:(num_gene_sets-1)) {
+    # group = 1
+    gene_sets[[group]] <- sample(genes, size=round(num_bio_genes/num_gene_sets))
+    genes <- genes[!(genes %in% gene_sets[[group]])]
+  }
+  gene_sets[[num_gene_sets]] <- genes
 }
-gene_sets[[num_gene_sets]] <- genes
-
 
 ```
 
