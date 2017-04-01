@@ -1,0 +1,556 @@
+---
+title: 'Simulation of Fluidigm Biomark qPCR data - Inputting simulated data into analysis scripts'
+author: "Samuel O Skinner"
+date: "March 31, 2017"
+output:
+  html_document:
+    number_sections: yes
+---
+
+
+```{r global_opts, echo=FALSE, cache=FALSE}
+knitr::opts_chunk$set(fig.width=8, fig.height=4, fig.align='center',
+                      echo=TRUE, warning=FALSE, message=FALSE,
+                      cache=FALSE, autodep=TRUE)
+# knitr::opts_knit$set(root.dir = "..")
+
+## numbers >= 10^5 will be denoted in scientific notation,
+## and rounded to 2 digits
+options(scipen = 1, digits = 5)
+```
+
+# Setup
+
+## Prepare workspace
+
+
+``` {r setup}
+
+# R code to start with Fluidigm Ct data and return delta delta Ct values
+
+library(combinat)
+library(knitr)
+library(shiny)
+library(gplots)
+library(ggplot2)
+library(reshape2)
+library(cowplot)
+library(sva)
+
+# read in scripts
+source(file=paste("scripts/","Fluidigm_R_Functions.R",sep=""))
+source(file=paste("scripts/","Fluidigm_R_HKgenes_Functions.R",sep=""))
+
+
+``` 
+
+## Load the data files and check for ID inconsistencies
+
+``` {r read in parameters, echo=FALSE}
+
+# read in all data files stored in Data directory - do not know how many there will be 
+fileNames<-list.files(path="data/")
+fileNames<-reorderFileNames(fileNames)
+
+# read in data
+dataList<-list()
+for (i in 1:length(fileNames))
+{
+	dataList[[i]]<-readFluidData(paste("data/",fileNames[i],sep=""))
+}
+names(dataList)<-fileNames
+
+
+# now check chamber IDs to make sure samples and genes match across plates
+# if they do not match, then stop processing - need to fix the input data
+anyError <- checkSampleGeneChamberIDs(dataList)
+print(paste("Errors detected:", anyError))
+
+
+# convert into matrix of rows (assays/genes) and columns (samples represented by chamber IDs)
+ctValList<-list()
+ctCallList<-list()
+for (i in 1:length(dataList))
+{
+	ctValList[[i]]<-changeFluidFormat(dataList[[i]], colName="Ct.Value")
+	ctCallList[[i]]<-changeFluidFormat(dataList[[i]], colName="Ct.Call")
+}
+
+# Extract and combine data from multiple plates
+retList<-combineDataFromMultiplePlates(dataList, ctValList, ctCallList)
+
+```
+
+
+
+
+## Define the analysis parameters
+``` {r define parameters, echo=FALSE}
+
+# Define parameters
+parameters <- data.frame(Key = c("PALX",
+                                 "floor",
+                                 "HKgenes",
+                                 "RefSamples",
+                                 "NegSamples"),
+                         Value = c("0.20",
+                                   "NA",
+                                   "GAPDH GUSB HSP90",
+                                   "Ambion 1ul of 1/4x;BioChain 1ul of 1/4x",
+                                   "NTC"))
+
+kable(parameters, row.names = FALSE)
+
+```
+
+
+# Preliminary analysis
+
+## Visualize the raw data
+``` {r vis raw, echo=FALSE, fig.height=20, fig.width=10}
+
+
+raw <- retList$ctValDataForPalx
+class(raw) <- "numeric"
+raw[raw > 100] <- NA
+
+colnames(raw) <- determineSampleNamesFromChamberIDInDataList(dataList, colnames(raw), retList$maxAssay)
+rownames(raw) <- convertWellToGeneName(rownames(raw), dataList)[,2]
+
+coords <- which(retList$ctCallDataForPalx == "Fail", arr.ind = TRUE)
+coords[,2] <- 96*length(fileNames) + 1 - coords[,2]
+
+# Plotting paramters
+my_palette <- colorRampPalette(c("green", "white", "red"))(n = 299)
+
+# lmat is the layout matrix, lwid defines column widths, lhei row heights
+lmat <- rbind(c(0, 4, 2), c(0, 1, 3))
+lwid <- c(0.5, 10, 2)
+lhei <- c(0.75, 5)
+
+par(mar = c(1, 1, 1, 1))
+heatmap.2(t(raw),
+          trace="none",
+          dendrogram = "none",
+          col=my_palette,
+          na.color = "grey2",
+          Rowv=FALSE,
+          Colv=FALSE,
+          add.expr=points(coords, 
+                          col='#333333', bg='#333333', 
+                          cex=0.5, pch=22),
+          lmat = lmat, lwid = lwid, lhei = lhei, 
+          #(bottom.margin, right.margin)
+          margins = c(5, 2),
+          denscol = "black",
+          key.title = NA, key.ylab = NA, key.xlab = "Ct values",
+          #( "bottom.margin", "left.margin", "top.margin", "right.margin" )
+          key.par = list(mar = c(4, 4, 2, 4)))
+
+
+```
+
+Black in this plot represents reactions that did not produce a Ct value, where likely there was no template (in the case of a negative control, this would be a positive result). These are categorized as failed reactions by the fluidigm analysis packages.
+  
+The grey squares in this plot represent reactions labeled "Fail".  While most failed reactions did not produce a Ct value, notice that some reactions with Ct values have failed as well. These failures could be caused by aberrant/unexpected PCR products or contamination.
+  
+  
+
+
+``` {r sep negs, echo=FALSE}
+
+# Calculate the percentage present (or Call == Pass) for samples
+SamPassMeans <- apply(retList$ctCallDataForPalx, 2, function(x) {mean(x=="Pass")})
+
+plot_sam <- ggplot(data.frame(x=SamPassMeans),
+       aes(x=x)) + 
+  geom_line(stat = "density") +
+  labs(x="FP", title="Fraction present for all samples")
+
+
+# Calculate the percentage present (or Call == Pass) for genes (assays)
+GenePassMeans <- apply(retList$ctCallDataForPalx, 1, function(x) {mean(x=="Pass")})
+
+plot_gene <- ggplot(data.frame(x=GenePassMeans),
+       aes(x=x)) + 
+  geom_line(stat = "density") +
+  labs(x="FP", title="Fraction present for all genes")
+
+plot_grid(plot_sam, plot_gene)
+
+
+```
+
+
+
+
+## Analysis of the negative samples
+
+
+```{r raw neg data, echo=FALSE, fig.height=4, fig.width=10}
+
+# Negative sample root name
+negNames <- strsplit(returnParameter(parameters, "NegSamples", "character"), split=";")[[1]]
+
+# Identify the negative samples
+sample_names <- determineSampleNamesFromChamberIDInDataList(dataList, colnames(retList$ctValDataForPalx), retList$maxAssay)
+negList <- colnames(retList$ctValDataForPalx)[which(sample_names %in% negNames)]
+
+
+
+
+rawValData  <- retList$ctValDataForPalx
+rawCallData <- retList$ctCallDataForPalx
+class(rawValData) <- "numeric"
+rawValData[rawValData > 100] <- NA
+
+negrawValData  <- rawValData[,colnames(rawValData) %in% negList]
+negrawCallData <- rawCallData[,colnames(rawCallData) %in% negList]
+
+colnames(negrawValData) <- determineSampleNamesFromChamberIDInDataList(dataList, colnames(negrawValData), retList$maxAssay)
+rownames(negrawValData) <- convertWellToGeneName(rownames(negrawValData), dataList)[,2]
+
+
+
+coords <- which(negrawCallData == "Fail", arr.ind = TRUE)
+coords[,2] <- dim(negrawCallData)[2] + 1 - coords[,2]
+
+# Plotting paramters
+my_palette <- colorRampPalette(c("green", "white", "red"))(n = 299)
+
+# lmat is the layout matrix, lwid defines column widths, lhei row heights
+lmat <- rbind(c(0, 4, 2), c(0, 1, 3))
+lwid <- c(0.5, 10, 2)
+lhei <- c(1, 2)
+
+par(mar = c(1, 1, 1, 1))
+heatmap.2(t(negrawValData),
+          trace="none",
+          dendrogram = "none",
+          col=my_palette,
+          na.color = "grey2",
+          Rowv=FALSE,
+          Colv=FALSE,
+          add.expr=points(coords, 
+                          col='#333333', bg='#333333', 
+                          cex=0.5, pch=22),
+          lmat = lmat, lwid = lwid, lhei = lhei, 
+          #(bottom.margin, right.margin)
+          margins = c(5, 2),
+          denscol = "black",
+          key.title = NA, key.ylab = NA, key.xlab = "Ct values",
+          #( "bottom.margin", "left.margin", "top.margin", "right.margin" )
+          key.par = list(mar = c(4, 4, 2, 4)))
+
+```
+
+
+
+
+```{r negative samples, echo=FALSE}
+
+
+
+# Calculate the percentage present for each sample (or Call == Pass)
+negpassMeans_sam <- apply(negrawCallData, 2, function(x) {mean(x=="Pass")})
+negpassNums_sam  <- apply(negrawCallData, 2, function(x) {sum(x=="Pass")})
+
+# Calculate the mean Ct value for those that passed
+negValPassNums_sam  <- apply(negrawValData, 2, function(x) { sum(as.numeric(x)<998, na.rm = T)})
+negValPassMeans_sam <- apply(negrawValData, 2, function(x) {mean(as.numeric(x)[as.numeric(x)<998], na.rm = T)})
+negValPassSds_sam   <- apply(negrawValData, 2, function(x) {  sd(as.numeric(x)[as.numeric(x)<998], na.rm = T)})
+
+
+# Display the negative samples
+if (length(negList)>0)
+{
+	negDisplay<-cbind(negList, 
+	                  determineSampleNamesFromChamberIDInDataList(dataList, negList, retList$maxAssay),
+	                  round(negpassMeans_sam, digits=3),
+	                  round(negpassNums_sam, digits=3),
+	                  round(negValPassNums_sam, digit=3),
+	                  round(negValPassMeans_sam, digits=3),
+	                  round(negValPassSds_sam, digits=3))
+	colnames(negDisplay)<-c("ChamberID", "SampleName", "FracPass", "NumPass", "NumCt", "mean(Ct)", "std(Ct)")
+}
+
+kable(negDisplay, row.names=FALSE, caption = "No template controls")
+
+
+
+
+
+# Calculate the percentage present for each assay (or Call == Pass)
+negpassMeans_ass <- apply(negrawCallData, 1, function(x) {mean(x=="Pass")})
+negpassNums_ass  <- apply(negrawCallData, 1, function(x) {sum(x=="Pass")})
+
+# Calculate the mean Ct value for those that passed
+negValPassNums_ass  <- apply(negrawValData, 1, function(x) { sum(as.numeric(x)<998, na.rm = T)})
+negValPassMeans_ass <- apply(negrawValData, 1, function(x) {mean(as.numeric(x)[as.numeric(x)<998], na.rm = T)})
+negValPassSds_ass   <- apply(negrawValData, 1, function(x) {  sd(as.numeric(x)[as.numeric(x)<998], na.rm = T)})
+
+# Display the genes that appear in the negative samples
+if (length(rownames(negrawCallData))>0)
+{
+	negDisplay<-cbind(convertWellToGeneName(rownames(negrawCallData), dataList),
+	                  round(negpassMeans_ass, digits=3),
+	                  round(negpassNums_ass, digits=3),
+	                  round(negValPassNums_ass, digits=3),
+	                  round(negValPassMeans_ass, digits=3),
+	                  round(negValPassSds_ass, digits=3))
+	colnames(negDisplay)<-c("ChamberID", "SampleName", "FracPass", "Numpass", "NumCt", "mean(Ct)", "std(Ct)")
+}
+
+kable(negDisplay, row.names=FALSE, caption = "Ct per gene in no template controls")
+
+
+
+```
+
+
+## Analysis of the reference samples
+
+```{r analysis of reference samples, echo=FALSE}
+
+rawValData  <- retList$ctValDataForPalx
+rawCallData <- retList$ctCallDataForPalx
+class(rawValData) <- "numeric"
+rawValData[rawValData > 100] <- NA
+
+
+
+# Reference sample root name
+refNames <- strsplit(returnParameter(parameters, "RefSamples", "character"), ";")[[1]]
+
+# Identify the reference samples
+refList <- colnames(retList$ctValDataForPalx)[which(sample_names %in% refNames)]
+
+
+refrawValData  <- rawValData[,colnames(rawValData) %in% refList]
+refrawCallData <- rawCallData[,colnames(rawCallData) %in% refList]
+
+colnames(refrawValData) <- determineSampleNamesFromChamberIDInDataList(dataList, colnames(refrawValData), retList$maxAssay)
+rownames(refrawValData) <- convertWellToGeneName(rownames(refrawValData), dataList)[,2]
+
+
+
+coords <- which(refrawCallData == "Fail", arr.ind = TRUE)
+coords[,2] <- dim(refrawCallData)[2] + 1 - coords[,2]
+
+# Plotting paramters
+my_palette <- colorRampPalette(c("green", "white", "red"))(n = 299)
+
+# lmat is the layout matrix, lwid defines column widths, lhei row heights
+lmat <- rbind(c(0, 4, 2), c(0, 1, 3))
+lwid <- c(0.5, 10, 2)
+lhei <- c(1, 2)
+
+par(mar = c(1, 1, 1, 1))
+heatmap.2(t(refrawValData),
+          trace="none",
+          dendrogram = "none",
+          col=my_palette,
+          na.color = "grey2",
+          Rowv=FALSE,
+          Colv=FALSE,
+          add.expr=points(coords, 
+                          col='#333333', bg='#333333', 
+                          cex=0.5, pch=22),
+          lmat = lmat, lwid = lwid, lhei = lhei, 
+          #(bottom.margin, right.margin)
+          margins = c(5, 2),
+          denscol = "black",
+          key.title = NA, key.ylab = NA, key.xlab = "Ct values",
+          #( "bottom.margin", "left.margin", "top.margin", "right.margin" )
+          key.par = list(mar = c(4, 4, 2, 4)))
+
+
+```
+
+
+
+
+
+```{r reference stats, echo=FALSE}
+
+
+# Calculate the percentage present for each sample (or Call == Pass)
+refpassMeans_sam <- apply(refrawCallData, 2, function(x) {mean(x=="Pass")})
+refpassNums_sam  <- apply(refrawCallData, 2, function(x) {sum(x=="Pass")})
+
+# Calculate the mean Ct value for those that passed
+refValPassNums_sam  <- apply(refrawValData, 2, function(x) { sum(as.numeric(x)<998, na.rm = T)})
+refValPassMeans_sam <- apply(refrawValData, 2, function(x) {mean(as.numeric(x)[as.numeric(x)<998], na.rm = T)})
+refValPassSds_sam   <- apply(refrawValData, 2, function(x) {  sd(as.numeric(x)[as.numeric(x)<998], na.rm = T)})
+
+
+# Display the reference samples
+if (length(refList)>0)
+{
+	refDisplay<-cbind(refList, 
+	                  determineSampleNamesFromChamberIDInDataList(dataList, refList, retList$maxAssay),
+	                  round(refpassMeans_sam, digits=3),
+	                  round(refpassNums_sam, digits=3),
+	                  round(refValPassNums_sam, digit=3),
+	                  round(refValPassMeans_sam, digits=3),
+	                  round(refValPassSds_sam, digits=3))
+	colnames(refDisplay)<-c("ChamberID", "SampleName", "FracPass", "NumPass", "NumCt", "mean(Ct)", "std(Ct)")
+}
+
+kable(refDisplay, row.names=FALSE, caption = "Reference samples")
+
+
+
+
+
+# Calculate the percentage present for each assay (or Call == Pass)
+refpassMeans_ass <- apply(refrawCallData, 1, function(x) {mean(x=="Pass")})
+refpassNums_ass  <- apply(refrawCallData, 1, function(x) {sum(x=="Pass")})
+
+# Calculate the mean Ct value for those that passed
+refValPassNums_ass  <- apply(refrawValData, 1, function(x) { sum(as.numeric(x)<998, na.rm = T)})
+refValPassMeans_ass <- apply(refrawValData, 1, function(x) {mean(as.numeric(x)[as.numeric(x)<998], na.rm = T)})
+refValPassSds_ass   <- apply(refrawValData, 1, function(x) {  sd(as.numeric(x)[as.numeric(x)<998], na.rm = T)})
+
+# Display the genes that appear in the reference samples
+if (length(rownames(refrawCallData))>0)
+{
+	refDisplay<-cbind(convertWellToGeneName(rownames(refrawCallData), dataList),
+	                  round(refpassMeans_ass, digits=3),
+	                  round(refpassNums_ass, digits=3),
+	                  round(refValPassNums_ass, digits=3),
+	                  round(refValPassMeans_ass, digits=3),
+	                  round(refValPassSds_ass, digits=3))
+	colnames(refDisplay)<-c("ChamberID", "SampleName", "FracPass", "Numpass", "NumCt", "mean(Ct)", "std(Ct)")
+}
+
+kable(refDisplay, row.names=FALSE, caption = "Ct per gene in no template controls")
+
+
+```
+
+
+
+
+
+
+## Analysis of the housekeeping genes
+
+```{r analysis of housekeeping genes, echo=FALSE}
+
+rawValData  <- retList$ctValDataForPalx
+rawCallData <- retList$ctCallDataForPalx
+class(rawValData) <- "numeric"
+rawValData[rawValData > 100] <- NA
+
+
+
+# Housekeeping gene names
+HKgeneNames <- strsplit(returnParameter(parameters, "HKgenes", "character"), " ")[[1]]
+
+# Identify the HK genes' assay numbers
+HKgeneList <- rownames(rawValData)[which(convertWellToGeneName(rownames(rawValData), dataList)[,2] %in% HKgeneNames)]
+
+
+HKrawValData  <- rawValData[rownames(rawValData) %in% HKgeneList,]
+HKrawCallData <- rawCallData[rownames(rawCallData) %in% HKgeneList,]
+
+colnames(HKrawValData) <- determineSampleNamesFromChamberIDInDataList(dataList, colnames(HKrawValData), retList$maxAssay)
+rownames(HKrawValData) <- convertWellToGeneName(rownames(HKrawValData), dataList)[,2]
+
+
+coords <- which(t(HKrawCallData) == "Fail", arr.ind = TRUE)
+coords[,2] <- dim(HKrawCallData)[1] + 1 - coords[,2]
+
+# Plotting paramters
+my_palette <- colorRampPalette(c("green", "white", "red"))(n = 299)
+
+# lmat is the layout matrix, lwid defines column widths, lhei row heights
+lmat <- rbind(c(0, 4, 2), c(0, 1, 3))
+lwid <- c(0.5, 10, 2)
+lhei <- c(1, 2)
+
+par(mar = c(1, 1, 1, 1))
+heatmap.2((HKrawValData),
+          trace="none",
+          dendrogram = "none",
+          col=my_palette,
+          na.color = "grey2",
+          Rowv=FALSE,
+          Colv=FALSE,
+          add.expr=points(coords, 
+                          col='#333333', bg='#333333', 
+                          cex=0.5, pch=22),
+          lmat = lmat, lwid = lwid, lhei = lhei, 
+          #(bottom.margin, right.margin)
+          margins = c(5, 2),
+          denscol = "black",
+          key.title = NA, key.ylab = NA, key.xlab = "Ct values",
+          #( "bottom.margin", "left.margin", "top.margin", "right.margin" )
+          key.par = list(mar = c(4, 4, 2, 4)))
+
+
+```
+
+
+
+
+
+```{r housekeeping stats, echo=FALSE}
+# 
+# 
+# # Calculate the percentage present for each sample (or Call == Pass)
+# HKpassMeans_sam <- apply(HKrawCallData, 2, function(x) {mean(x=="Pass")})
+# HKpassNums_sam  <- apply(HKrawCallData, 2, function(x) {sum(x=="Pass")})
+# 
+# # Calculate the mean Ct value for those that passed
+# HKValPassNums_sam  <- apply(HKrawValData, 2, function(x) { sum(as.numeric(x)<998, na.rm = T)})
+# HKValPassMeans_sam <- apply(HKrawValData, 2, function(x) {mean(as.numeric(x)[as.numeric(x)<998], na.rm = T)})
+# HKValPassSds_sam   <- apply(HKrawValData, 2, function(x) {  sd(as.numeric(x)[as.numeric(x)<998], na.rm = T)})
+# 
+# 
+# # Display the HKerence samples
+# if (length(refList)>0)
+# {
+# 	HKDisplay<-cbind(refList, 
+# 	                  determineSampleNamesFromChamberIDInDataList(dataList, refList, retList$maxAssay),
+# 	                  round(HKpassMeans_sam, digits=3),
+# 	                  round(HKpassNums_sam, digits=3),
+# 	                  round(HKValPassNums_sam, digit=3),
+# 	                  round(HKValPassMeans_sam, digits=3),
+# 	                  round(HKValPassSds_sam, digits=3))
+# 	colnames(HKDisplay)<-c("ChamberID", "SampleName", "FracPass", "NumPass", "NumCt", "mean(Ct)", "std(Ct)")
+# }
+# 
+# kable(HKDisplay, row.names=FALSE, caption = "Housekeeping genes")
+# 
+# 
+# 
+# 
+# 
+# # Calculate the percentage present for each assay (or Call == Pass)
+# HKpassMeans_ass <- apply(HKrawCallData, 1, function(x) {mean(x=="Pass")})
+# HKpassNums_ass  <- apply(HKrawCallData, 1, function(x) {sum(x=="Pass")})
+# 
+# # Calculate the mean Ct value for those that passed
+# HKValPassNums_ass  <- apply(HKrawValData, 1, function(x) { sum(as.numeric(x)<998, na.rm = T)})
+# HKValPassMeans_ass <- apply(HKrawValData, 1, function(x) {mean(as.numeric(x)[as.numeric(x)<998], na.rm = T)})
+# HKValPassSds_ass   <- apply(HKrawValData, 1, function(x) {  sd(as.numeric(x)[as.numeric(x)<998], na.rm = T)})
+# 
+# # Display the genes that appear in the reference samples
+# if (length(rownames(HKrawCallData))>0)
+# {
+# 	HKDisplay<-cbind(convertWellToGeneName(rownames(HKrawCallData), dataList),
+# 	                  round(HKpassMeans_ass, digits=3),
+# 	                  round(HKpassNums_ass, digits=3),
+# 	                  round(HKValPassNums_ass, digits=3),
+# 	                  round(HKValPassMeans_ass, digits=3),
+# 	                  round(HKValPassSds_ass, digits=3))
+# 	colnames(HKDisplay)<-c("ChamberID", "SampleName", "FracPass", "Numpass", "NumCt", "mean(Ct)", "std(Ct)")
+# }
+# 
+# kable(HKDisplay, row.names=FALSE, caption = "Ct per gene in no template controls")
+
+
+```
+
