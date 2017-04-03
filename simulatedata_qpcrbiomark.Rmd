@@ -37,6 +37,7 @@ library(shiny)
 library(ggplot2)
 library(reshape2)
 library(cowplot)
+library(xlsx)
 
 # read in scripts
 source(file=paste(workdir,"scripts/","Fluidigm_R_Functions.R",sep=""))
@@ -154,21 +155,67 @@ genes <- seq(1:num_bio_genes)
 if (num_gene_sets==1) {
   gene_sets[[1]] <- genes
 } else {
-  for (group in 1:(num_gene_sets-1)) {
-    # group = 1
-    gene_sets[[group]] <- sample(genes, size=round(num_bio_genes/num_gene_sets))
-    genes <- genes[!(genes %in% gene_sets[[group]])]
+  for (set in 1:(num_gene_sets-1)) {
+    gene_sets[[set]] <- sample(genes, size=round(num_bio_genes/num_gene_sets))
+    genes <- genes[!(genes %in% gene_sets[[set]])]
   }
   gene_sets[[num_gene_sets]] <- genes
 }
 
+# Reference and negative samples
+ref_samples <- seq((num_bio_samples+1),(num_bio_samples+num_ref_samples))
+neg_samples <- seq((num_bio_samples+num_ref_samples+1), num_samples)
+
+# Housekeeping genes
+HK_genes <- seq((num_bio_genes+1), num_genes)
+
 ```
 
-## Define the expression patter for the sample groups and gene sets
+## Define the expression pattern for the sample groups and gene sets
 
 ```{r exp pattern}
 
+# Fill in reference samples 
+cts[c(unlist(gene_sets), HK_genes),ref_samples] <- 25
 
+# Fill in housekeeping genes
+cts[HK_genes,c(unlist(sample_groups), ref_samples)] <- 45
+
+# Fill in the negatives
+cts[,neg_samples] <- 1
+
+# Fill in the samples to investigate
+num_patterns <- num_gene_sets * num_sample_groups
+patterns <- 10*seq(1,num_patterns)
+i <- 1
+for (group in 1:num_sample_groups) {
+  # group = 2
+  for (set in 1:num_gene_sets) {
+    # set = 3
+    cts[gene_sets[[set]],sample_groups[[group]]] <- patterns[i]
+    i <- i+1
+  }
+}
+
+```
+
+
+# Save as csv files
+
+```{r save files}
+
+cts_long <- melt(cts)
+
+# Add in the sample names to the data csv
+rawData$S..Fluidigm.Data.P142.Th2A.Th2.ILC2.Anaptys.qPCR...Erik.P142.2.P142.2_S2A1_1362055191_6335.FDGP.16_28Dec2016.ChipRun.bml[12:(11+dim(cts_long)[1])] <- cts_long$Var2
+
+# Add in the values to the data csv
+rawData$EvaGreen[12:(11+dim(cts_long)[1])] <- cts_long$value
+
+# Write out the simulated data
+write.xlsx(rawData, 
+           file="/Users/samskinner/Box Sync/Projects/simulatedata_qpcrbiomark/data/simulated_data_output.xlsx",
+           row.names = FALSE)
 
 ```
 
