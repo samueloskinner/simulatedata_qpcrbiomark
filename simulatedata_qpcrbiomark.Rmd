@@ -1,7 +1,7 @@
 ---
 title: 'Simulation of Fluidigm Biomark qPCR data - For verification of analysis scripts'
 author: "Samuel O Skinner"
-date: "March 31, 2017"
+date: "April 6, 2017"
 output:
   html_document:
     number_sections: yes
@@ -182,7 +182,7 @@ cts[c(unlist(gene_sets), HK_genes),ref_samples] <- 25
 cts[HK_genes,c(unlist(sample_groups), ref_samples)] <- 45
 
 # Fill in the negatives
-cts[,neg_samples] <- 1
+cts[,neg_samples] <- 2
 
 # Fill in the samples to investigate
 num_patterns <- num_gene_sets * num_sample_groups
